@@ -60,13 +60,14 @@
     <h1>Power Price</h1>
     <p>This is the Power Price page.</p>
     <p>
-      <a href="https://www.elprisenligenu.dk"
-        ><img
+      <a href="https://www.elprisenligenu.dk">
+        <img
           src="https://i.bnfcl.io/hva-koster-strommen/elpriser-leveret-af-elprisenligenu_LJNbbujZAX.png"
           alt="Elpriser leveret af Elprisen lige nu.dk"
           width="200"
           height="45"
-      /></a>
+        />
+      </a>
     </p>
 
     <div class="status" id="status">Loading electricity prices…</div>
@@ -87,16 +88,22 @@
     <p><a href="index.html">Back to home</a></p>
 
     <script>
-      const rssUrl = "https://www.elprisenligenu.dk/rss/prices/DK1";
-      const todayHeader = document.getElementById("todayHeader");
-      const tomorrowHeader = document.getElementById("tomorrowHeader");
-      const tableBody = document.getElementById("priceTableBody");
-      const statusText = document.getElementById("status");
+      function formatApiDate(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}/${month}-${day}_DK2.json`;
+      }
+
+      function buildApiUrlForDate(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `https://www.elprisenligenu.dk/api/v1/prices/${year}/${month}-${day}_DK2.json`;
+      }
 
       function formatPrice(value) {
-        if (value === null || value === undefined || Number.isNaN(value)) {
-          return "-";
-        }
+        if (value === null || value === undefined || Number.isNaN(value)) return "-";
         return `${value.toFixed(2)} kr/kWh`;
       }
 
@@ -104,35 +111,6 @@
         const start = String(hour).padStart(2, "0");
         const end = String((hour + 1) % 24).padStart(2, "0");
         return `${start}:00-${end}:00`;
-      }
-
-      function parsePriceValue(rawText) {
-        if (!rawText) return null;
-        const match = String(rawText).match(/(\d+(?:[.,]\d+)?)/);
-        if (!match) return null;
-        return Number(match[1].replace(",", "."));
-      }
-
-      function extractDateAndHour(text) {
-        if (!text) return null;
-
-        const directMatch = text.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}):00-(\d{2}):00/i);
-        if (directMatch) {
-          return {
-            date: directMatch[1],
-            hour: Number(directMatch[2])
-          };
-        }
-
-        const simpleMatch = text.match(/(\d{4}-\d{2}-\d{2})\s+(\d{2}):\d{2}/i);
-        if (simpleMatch) {
-          return {
-            date: simpleMatch[1],
-            hour: Number(simpleMatch[2])
-          };
-        }
-
-        return null;
       }
 
       function buildTable(dataMap, firstDate, secondDate) {
@@ -159,79 +137,70 @@
           `);
         }
 
-        tableBody.innerHTML = rows.join("");
+        document.getElementById("priceTableBody").innerHTML = rows.join("");
+      }
+
+      function getHourFromTime(timeString) {
+        const date = new Date(timeString);
+        return date.getHours();
       }
 
       async function loadPrices() {
+        const today = new Date();
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+
+        const todayUrl = buildApiUrlForDate(today);
+        const tomorrowUrl = buildApiUrlForDate(tomorrow);
+
         try {
-          const response = await fetch(rssUrl);
-          if (!response.ok) {
-            throw new Error(`Request failed with status ${response.status}`);
+          const [todayResponse, tomorrowResponse] = await Promise.all([
+            fetch(todayUrl),
+            fetch(tomorrowUrl)
+          ]);
+
+          if (!todayResponse.ok) {
+            throw new Error(`Could not load today's prices (${todayResponse.status})`);
           }
 
-          const xmlText = await response.text();
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(xmlText, "application/xml");
-
-          const parseErrors = xmlDoc.querySelector("parsererror");
-          if (parseErrors) {
-            throw new Error("The electricity price feed could not be parsed.");
-          }
-
-          const items = Array.from(xmlDoc.querySelectorAll("item"));
-          const prices = [];
-
-          items.forEach((item) => {
-            const title = item.querySelector("title")?.textContent || "";
-            const description = item.querySelector("description")?.textContent || "";
-            const priceText = parsePriceValue(description) ?? parsePriceValue(title);
-            const dateInfo = extractDateAndHour(title) || extractDateAndHour(description);
-
-            if (dateInfo && priceText !== null) {
-              prices.push({
-                date: dateInfo.date,
-                hour: dateInfo.hour,
-                price: priceText
-              });
-            }
-          });
-
-          if (prices.length === 0) {
-            throw new Error("No electricity price data was found in the feed.");
-          }
-
-          const sortedDates = [...new Set(prices.map((entry) => entry.date))].sort();
-          const firstDate = sortedDates[0];
-          const secondDate = sortedDates[1] || firstDate;
+          const todayData = await todayResponse.json();
+          const tomorrowData = tomorrowResponse.ok ? await tomorrowResponse.json() : [];
 
           const dataMap = new Map();
-          prices.forEach((entry) => {
-            if (!dataMap.has(entry.date)) {
-              dataMap.set(entry.date, {});
-            }
-            dataMap.get(entry.date)[entry.hour] = entry.price;
-          });
 
-          const dateLabel1 = new Date(`${firstDate}T00:00:00`).toLocaleDateString(undefined, {
+          function addEntries(date, entries) {
+            const map = {};
+            entries.forEach((entry) => {
+              const hour = getHourFromTime(entry.time_start);
+              map[hour] = Number(entry.DKK_per_kWh);
+            });
+            dataMap.set(date.toISOString().slice(0, 10), map);
+          }
+
+          addEntries(today, todayData);
+          addEntries(tomorrow, tomorrowData);
+
+          const firstDate = today.toISOString().slice(0, 10);
+          const secondDate = tomorrow.toISOString().slice(0, 10);
+
+          document.getElementById("todayHeader").textContent = today.toLocaleDateString(undefined, {
             weekday: "short",
             month: "short",
             day: "numeric"
           });
 
-          const dateLabel2 = new Date(`${secondDate}T00:00:00`).toLocaleDateString(undefined, {
+          document.getElementById("tomorrowHeader").textContent = tomorrow.toLocaleDateString(undefined, {
             weekday: "short",
             month: "short",
             day: "numeric"
           });
 
-          todayHeader.textContent = dateLabel1;
-          tomorrowHeader.textContent = dateLabel2;
           buildTable(dataMap, firstDate, secondDate);
-          statusText.textContent = "Electricity prices loaded successfully.";
+          document.getElementById("status").textContent = "Electricity prices loaded successfully.";
         } catch (error) {
           console.error(error);
-          statusText.textContent = "Could not load electricity prices. Please try again later.";
-          tableBody.innerHTML = "<tr><td colspan='3'>No data available.</td></tr>";
+          document.getElementById("status").textContent = "Could not load electricity prices. Please try again later.";
+          document.getElementById("priceTableBody").innerHTML = "<tr><td colspan='3'>No data available.</td></tr>";
         }
       }
 
